@@ -10,5 +10,3 @@ backend/uploads/
 # Node.js frontend files
 frontend/node_modules/
 frontend/dist/
-
-backend/
