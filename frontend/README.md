@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
@@ -15,19 +14,3 @@ The React Compiler is not enabled on this template because of its impact on dev 
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
-=======
-
-
-https://github.com/user-attachments/assets/ecf80515-e672-4346-bd19-7b427c2fd064
-
-Agriculture-Sales Tracker
-An end-to-end AI-powered receipt extraction and inventory management system designed for agricultural distribution businesses.
-This application automates the ingestion of handwritten receipts using local vision models and persists the data to a SQLite database.
-
-Architecture Overview
-The system is split into two distinct components:
-
-Backend (Ubuntu Server): A FastAPI-based Python server that handles AI vision inference via Ollama, parses unstructured data, and manages the SQLite database.
-
-Frontend (Windows Laptop): A responsive React dashboard built with Vite and Tailwind CSS that serves as the interface for receipt uploads and data visualization.
->>>>>>> 4fce94976112dfc274b6f35dd4eb94b6dce98f00
