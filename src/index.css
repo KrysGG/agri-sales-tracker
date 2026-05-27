@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@layer utilities {
+  .bg-custom-blend {
+    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 35%, #84cc16 100%);
+  }
+}
