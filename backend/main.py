@@ -1,54 +1,110 @@
+# -*- coding: utf-8 -*-
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 import ollama
 import json
-import re
+import sqlite3
 
-app = FastAPI(title="Agri-Sales Tracker API (Pipe Pipeline)")
+app = FastAPI(title="Agri-Sales Tracker API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- AGENT PROMPTS ---
+# ==========================================
+# DATABASE INITIALIZATION
+# ==========================================
+DB_FILE = "agri_sales.db"
 
+def init_db():
+    """Creates the SQLite database and tables if they don't exist yet."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # Table for the overall receipt summary
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            total_revenue REAL
+        )
+    ''')
+    
+    # Table for the individual items on the receipt
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS receipt_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_id INTEGER,
+            product_name TEXT,
+            boxes INTEGER,
+            quantity INTEGER,
+            unit_price REAL,
+            total REAL,
+            FOREIGN KEY(receipt_id) REFERENCES receipts(id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Run this immediately when the server boots up
+init_db()
+
+# ==========================================
+# DATA MODELS (For the /save route)
+# ==========================================
+class ReceiptItem(BaseModel):
+    name: str
+    boxes: int
+    quantity: int
+    unit_price: float
+    total: float
+
+class Financials(BaseModel):
+    total_revenue: float
+    total_expense: float
+    net_profit: float
+
+class ReceiptPayload(BaseModel):
+    date: str
+    items: List[ReceiptItem]
+    financials: Financials
+
+# ==========================================
+# AI PROMPT
+# ==========================================
 VISION_PROMPT = """
-You are a strict agricultural data extraction API. You are looking at a messy handwritten receipt.
+You are a precise agricultural data extraction assistant. 
 
-CRITICAL RULES:
-1. IGNORE PRE-PRINTED TEXT: Completely ignore "Guineos Maduros", "Guineos Verdes", and "Platanos". Do not extract them.
-2. FIND HANDWRITING: Only look for the row physically written in pencil (e.g., "Papaya").
-3. LEFT-TO-RIGHT TRANSCRIPT: Read that specific handwritten row like a book, from left to right.
-4. PIPED FORMAT: Output the row as a single string separated by the pipe symbol (|).
-   Format: "Boxes | Description | Quantity | Price"
-   Example: "30 | Papaya | 30 | 14.00"
-5. DECIMAL FIX: If you see "14 00/" or similar, write it as "14.00". Do NOT combine numbers from different columns into "30.14".
+### TASK:
+1. Scan the receipt for product rows within the main table.
+2. Only extract rows where there is a value in the 'CANT.' or 'CAJAS' columns.
+3. Stop extraction if you encounter a large vertical space indicating the end of the list.
 
-EXPECTED JSON SCHEMA:
-{
-  "raw_lines": [
-    "string"
-  ]
-}
+### DATA CONSTRAINTS:
+- Use this list of valid products: Guineos Maduros, Guineos Verdes, Platanos, Pina, Papaya, Ninos Guineos, Limones.
+- Treat 'CANT.' and 'CAJAS' values as identical.
+- Ignore any numeric headers or index numbers located to the left of the product name.
+
+### OUTPUT FORMAT:
+- Output a JSON object with a key 'raw_lines'.
+- Each item in 'raw_lines' must be a string: "Boxes | Description | Quantity | Price".
+- If a field is missing data, leave it blank (e.g., " | Name | | ").
+- Example: {"raw_lines": ["25 | Guineos Maduros | 25 | 37", "16 | Guineos Verdes | 16 | 35"]}
 """
 
-TRANSLATOR_PROMPT = """
-You are an agricultural translation API. I will give you a JSON object containing farm products in Spanish. 
-Translate ONLY the "name" values into English (e.g., "Papaya" -> "Papaya"). 
-Keep the exact same JSON structure and numbers. Return ONLY valid JSON.
-"""
-
+# ==========================================
+# ROUTE 1: EXTRACT ONLY (No Database)
+# ==========================================
 @app.post("/api/v1/receipts/upload")
-async def upload_receipt(file: UploadFile = File(...)):
+async def extract_receipt(file: UploadFile = File(...)):
     image_bytes = await file.read()
     
-    # ==========================================
-    # LAYER 1: VISION OCR (String Extraction)
-    # ==========================================
     print("Layer 1: Extracting Raw Strings...")
     try:
         vision_response = ollama.chat(
@@ -64,11 +120,6 @@ async def upload_receipt(file: UploadFile = File(...)):
         print(f"Layer 1 Failed: {e}")
         raw_lines = []
         
-    print(f"Layer 1 Output: {raw_lines}")
-
-    # ==========================================
-    # LAYER 1.5: PYTHON STRING PARSER
-    # ==========================================
     print("Layer 1.5: Python slicing the pipe data...")
     scrubbed_items = []
     
@@ -76,16 +127,11 @@ async def upload_receipt(file: UploadFile = File(...)):
         parts = [p.strip() for p in line.split('|')]
         if len(parts) >= 4:
             try:
-                # Extract only the numbers from the strings
                 boxes = int(''.join(filter(str.isdigit, parts[0])) or 0)
                 name = parts[1]
                 qty = int(''.join(filter(str.isdigit, parts[2])) or 0)
-                
-                # Clean the price string (remove '$', '/', text) keep decimals
                 price_str = ''.join(c for c in parts[3] if c.isdigit() or c == '.')
                 price = float(price_str) if price_str else 0.0
-                
-                # Fallback: if quantity is blank, use boxes
                 actual_qty = qty if qty > 0 else boxes
                 
                 if actual_qty > 0 and price > 0:
@@ -96,49 +142,61 @@ async def upload_receipt(file: UploadFile = File(...)):
                         "unit_price": price
                     })
             except Exception as e:
-                print(f"Failed to parse line: {line} - Error: {e}")
                 continue
                 
-    clean_spanish_data = {"items": scrubbed_items}
-    print(f"Layer 1.5 Clean Output: {json.dumps(clean_spanish_data, indent=2)}")
+    data = {"items": scrubbed_items}
 
-    # ==========================================
-    # LAYER 2: TRANSLATOR (Spanish -> English)
-    # ==========================================
-    print("Layer 2: Translator Engine...")
-    if not scrubbed_items:
-        english_data = clean_spanish_data
-    else:
-        try:
-            translator_response = ollama.chat(
-                model='llama3.1',
-                messages=[
-                    {'role': 'system', 'content': TRANSLATOR_PROMPT},
-                    {'role': 'user', 'content': json.dumps(clean_spanish_data)}
-                ],
-                format='json'
-            )
-            english_data = json.loads(translator_response['message']['content'])
-        except Exception as e:
-            print(f"Layer 2 Failed: {e}")
-            english_data = clean_spanish_data
-        
-    # ==========================================
-    # LAYER 3: PYTHON MATH ENGINE
-    # ==========================================
     print("Layer 3: Python calculating financials...")
     total_revenue = 0.0
     
-    for item in english_data.get('items', []):
+    for item in data.get('items', []):
         row_total = item.get('quantity', 0) * item.get('unit_price', 0)
         item['total'] = float(row_total)
         total_revenue += row_total
         
-    english_data['financials'] = {
+    data['financials'] = {
         "total_revenue": float(total_revenue),
         "total_expense": 0.0, 
         "net_profit": float(total_revenue)
     }
     
-    print("Pipeline Complete. Sending to Frontend.")
-    return english_data
+    print("Extraction Complete. Sending to Frontend for Human Verification.")
+    return data
+
+# ==========================================
+# ROUTE 2: SAVE VERIFIED DATA TO SQLITE
+# ==========================================
+@app.post("/api/v1/receipts/save")
+async def save_receipt(payload: ReceiptPayload):
+    print(f"Saving verified data for date: {payload.date}")
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Save the main receipt entry
+        cursor.execute(
+            "INSERT INTO receipts (date, total_revenue) VALUES (?, ?)",
+            (payload.date, payload.financials.total_revenue)
+        )
+        receipt_id = cursor.lastrowid # Grabs the ID that SQLite just auto-generated
+        
+        # 2. Save all the individual items, linking them to the receipt ID
+        for item in payload.items:
+            cursor.execute(
+                """
+                INSERT INTO receipt_items 
+                (receipt_id, product_name, boxes, quantity, unit_price, total) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (receipt_id, item.name, item.boxes, item.quantity, item.unit_price, item.total)
+            )
+            
+        conn.commit()
+        return {"status": "success", "message": "Data saved to SQLite successfully!"}
+        
+    except Exception as e:
+        conn.rollback() # If anything fails, undo the whole transaction so we don't get partial data
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()
