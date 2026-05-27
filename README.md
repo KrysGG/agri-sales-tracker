@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/ecf80515-e672-4346-bd19-7b427c2fd064
+
 Agriculture-Sales Tracker
 An end-to-end AI-powered receipt extraction and inventory management system designed for agricultural distribution businesses.
 This application automates the ingestion of handwritten receipts using local vision models and persists the data to a SQLite database.
